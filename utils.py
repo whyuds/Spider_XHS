@@ -13,6 +13,9 @@ from openpyxl import load_workbook
 from retry import retry
 from PIL import Image
 import numpy as np
+from datetime import datetime, timedelta
+from openai import OpenAI
+
 
 # --- Common Utils ---
 def load_env():
@@ -133,25 +136,34 @@ def splice_str(api, params):
 # --- OCR Utils ---
 try:
     from paddleocr import PaddleOCR
-    # Initialize globally
-    # use_angle_cls=False: Disable direction checker for speed
-    # lang="ch": Chinese
-    ocr = PaddleOCR(use_angle_cls=False, lang="ch", ocr_version="PP-OCRv4") 
     HAS_OCR = True
 except ImportError:
     HAS_OCR = False
-    # Only warn if actually trying to use it, or warn once here
-    # logger.warning("PaddleOCR not found.")
+
+_ocr_instance = None
+
+def get_ocr_instance():
+    global _ocr_instance
+    if not HAS_OCR:
+        return None
+    if _ocr_instance is None:
+        # Initialize globally on first use
+        _ocr_instance = PaddleOCR(use_angle_cls=False, lang="ch", ocr_version="PP-OCRv4")
+    return _ocr_instance
 
 def ocr_process_note_images(note_path):
     if not HAS_OCR:
         logger.warning("OCR skipped because paddleocr is not installed.")
         return
 
+    ocr = get_ocr_instance()
+    if not ocr:
+        return
+
     if not os.path.exists(note_path):
         return
 
-    logger.info(f"正在对 {note_path} 进行OCR文字识别...")
+    logger.info(f"正在对 {os.path.basename(note_path)} 进行OCR文字识别...")
     
     processed_count = 0
     for root, dirs, files in os.walk(note_path):
@@ -416,3 +428,73 @@ def handle_note_info(data):
         'upload_time': upload_time,
         'ip_location': ip_location,
     }
+
+# --- AI & Notification Utils ---
+def generate_ai_summary(content):
+    api_key = os.getenv('ARK_API_KEY')
+    if not api_key:
+        logger.error("ARK_API_KEY not found in environment variables. Skipping AI summary.")
+        return "Error: ARK_API_KEY not found."
+
+    try:
+        client = OpenAI(
+            base_url="https://ark.cn-beijing.volces.com/api/v3",
+            api_key=api_key,
+        )
+        
+        # Using standard chat completion
+        response = client.chat.completions.create(
+            model="doubao-seed-1-8-251228",
+            messages=[
+                {
+                    "role": "system",
+                    "content": "你是一个专业的投资分析助手。请根据提供的各个用户笔记内容（包含OCR识别的文字），帮我整理一下每个人的今日的投资建议，每个人的建议不超过200字。"
+                },
+                {
+                    "role": "user",
+                    "content": content
+                }
+            ]
+        )
+        return response.choices[0].message.content
+    except Exception as e:
+        logger.error(f"AI Summary generation failed: {e}")
+        return f"Error generating summary: {e}"
+
+def send_wxpusher_message(content, uids, summary_prefix=""):
+    if not uids:
+        logger.warning("No UIDs provided for WxPusher notification.")
+        return
+
+    url = "https://wxpusher.zjiecode.com/api/send/message"
+    
+    # Format summary title: M月D日 + fixed suffix
+    if not summary_prefix:
+        summary_title = f"{(datetime.now() - timedelta(days=1)).strftime('%m月%d日')}收盘后关注用户总结"
+    else:
+        summary_title = summary_prefix
+    
+    payload = {
+        "appToken": "AT_yR3sR0zXtKJQ8hIQuE4gIriw9JeTj3wA",
+        "content": content,
+        "summary": summary_title,
+        "contentType": 3,
+        "topicIds": [43062],
+        "uids": uids,
+        "verifyPayType": 0
+    }
+    
+    headers = {
+        'Content-Type': 'application/json'
+    }
+    
+    try:
+        response = requests.post(url, json=payload, headers=headers)
+        response_data = response.json()
+        if response_data.get('code') == 1000:
+            logger.info(f"WxPusher notification sent successfully to {len(uids)} users.")
+        else:
+            logger.error(f"WxPusher notification failed: {response_data.get('msg')}")
+    except Exception as e:
+        logger.error(f"Error sending WxPusher notification: {e}")
+

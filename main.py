@@ -3,8 +3,9 @@ import os
 import urllib.parse
 from datetime import datetime, timedelta
 import requests
+import time
 from loguru import logger
-from openai import OpenAI
+
 
 from utils import (
     init, 
@@ -15,7 +16,11 @@ from utils import (
     ocr_process_note_images, 
     generate_request_params,
     splice_str,
-    norm_str
+    generate_request_params,
+    splice_str,
+    norm_str,
+    generate_ai_summary,
+    send_wxpusher_message
 )
 
 class XHS_Apis():
@@ -37,6 +42,7 @@ class XHS_Apis():
             splice_api = splice_str(api, params)
             headers, cookies, data = generate_request_params(cookies_str, splice_api, '', 'GET')
             response = requests.get(self.base_url + splice_api, headers=headers, cookies=cookies, proxies=proxies)
+            logger.info(response.text)
             res_json = response.json()
             success, msg = res_json["success"], res_json["msg"]
         except Exception as e:
@@ -120,7 +126,8 @@ class Data_Spider():
         except Exception as e:
             success = False
             msg = e
-        logger.info(f'爬取笔记信息 {note_url}: {success}, msg: {msg}')
+        note_id_log = note_url.split('/')[-1].split('?')[0] if note_url else 'Unknown'
+        logger.info(f'爬取笔记信息 {note_id_log}: {success}, msg: {msg}')
         return success, msg, note_info
 
     def process_and_save_notes(self, note_list: list, base_path: dict, save_choice: str, excel_name: str = '', mode='w', enable_ocr: bool = False):
@@ -130,6 +137,7 @@ class Data_Spider():
         for note_info in note_list:
             if save_choice == 'all' or 'media' in save_choice:
                 save_path = download_note(note_info, base_path['media'], save_choice)
+                note_info['local_save_path'] = save_path
                 if enable_ocr:
                     ocr_process_note_images(save_path)
 
@@ -137,113 +145,11 @@ class Data_Spider():
             file_path = os.path.abspath(os.path.join(base_path['excel'], f'{excel_name}.xlsx'))
             save_to_xlsx(note_list, file_path, mode=mode)
 
-    def generate_ai_summary(self, content):
-        api_key = os.getenv('ARK_API_KEY')
-        if not api_key:
-            logger.error("ARK_API_KEY not found in environment variables. Skipping AI summary.")
-            return "Error: ARK_API_KEY not found."
 
-        try:
-            client = OpenAI(
-                base_url="https://ark.cn-beijing.volces.com/api/v3",
-                api_key=api_key,
-            )
-            
-            # Using standard chat completion
-            response = client.chat.completions.create(
-                model="doubao-seed-1-8-251228",
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "你是一个专业的投资分析助手。请根据提供的用户笔记内容（包含OCR识别的文字），总结整理出一份当日投资分析。"
-                    },
-                    {
-                        "role": "user",
-                        "content": content
-                    }
-                ]
-            )
-            return response.choices[0].message.content
-        except Exception as e:
-            logger.error(f"AI Summary generation failed: {e}")
-            return f"Error generating summary: {e}"
 
-    def generate_day_summary_files(self, date_str, note_list, base_path):
-        summary_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'datas', 'day_summary_datas')
-        if not os.path.exists(summary_dir):
-            os.makedirs(summary_dir)
-        
-        content_file_path = os.path.join(summary_dir, f'{date_str}_content.txt')
-        summary_file_path = os.path.join(summary_dir, f'{date_str}_summary.txt')
-        
-        # 1. Generate Content File
-        full_content = ""
-        for note in note_list:
-            # Reconstruct save path to find OCR files
-            title = norm_str(note['title'])[:40]
-            nickname = norm_str(note['nickname'])[:20]
-            if not title.strip(): title = '无标题'
-            
-            user_id = note['user_id']
-            note_id = note['note_id']
-            upload_time = note.get('upload_time')
-            date_prefix = ""
-            if upload_time:
-                try:
-                    date_prefix = upload_time.split(' ')[0].replace('-', '') + "_"
-                except:
-                    pass
-            
-            # Path format from download_note: f'{path}/{nickname}_{user_id}/{date_prefix}{title}_{note_id}'
-            # We need to construct the absolute path to check for txt files
-            note_dir_name = f"{date_prefix}{title}_{note_id}"
-            user_dir_name = f"{nickname}_{user_id}"
-            note_ab_path = os.path.join(base_path['media'], user_dir_name, note_dir_name)
-            
-            ocr_text = ""
-            if os.path.exists(note_ab_path):
-                for file in os.listdir(note_ab_path):
-                    if file.endswith('.txt') and file != 'detail.txt':
-                        with open(os.path.join(note_ab_path, file), 'r', encoding='utf-8') as f:
-                            ocr_text += f"\n[图片文字 - {file}]:\n" + f.read()
-            
-            note_block = f"""
-==================================================
-笔记ID: {note['note_id']}
-类型: {note['note_type']}
-用户昵称: {note['nickname']}
-标题: {note['title']}
-描述: {note['desc']}
-标签: {', '.join(note.get('tags', []))}
-上传时间: {note.get('upload_time')}
-OCR识别结果:
-{ocr_text}
-==================================================
-"""
-            full_content += note_block
 
-        try:
-            with open(content_file_path, 'w', encoding='utf-8') as f:
-                f.write(full_content)
-            logger.info(f"Generated day content file: {content_file_path}")
-        except Exception as e:
-            logger.error(f"Failed to write content file: {e}")
-            return
 
-        # 2. Generate AI Summary
-        if full_content.strip():
-            logger.info("Generating AI summary...")
-            summary = self.generate_ai_summary(full_content)
-            try:
-                with open(summary_file_path, 'w', encoding='utf-8') as f:
-                    f.write(summary)
-                logger.info(f"Generated day summary file: {summary_file_path}")
-            except Exception as e:
-                logger.error(f"Failed to write summary file: {e}")
-        else:
-            logger.warning("No content to summarize.")
-
-    def spider_user_all_note(self, user_url: str, cookies_str: str, base_path: dict, save_choice: str, excel_name: str = '', proxies=None, crawl_interval: str = 'all', is_update: bool = False, enable_ocr: bool = False):
+    def spider_user_all_note(self, user_url: str, cookies_str: str, base_path: dict, save_choice: str, excel_name: str = '', proxies=None, crawl_interval: str = 'all', is_update: bool = False, enable_ocr: bool = False, progress_info: str = ''):
         note_info_list = []
         note_url_list = []
         
@@ -285,6 +191,26 @@ OCR识别结果:
                     break
                 
                 logger.info(f'Fetching batch of {len(simple_note_infos)} notes...')
+
+                if simple_note_infos and len(simple_note_infos) > 0:
+                    try:
+                         # Log user info on first batch success if progress_info is provided or just once
+                         # We can check if we handled this log already? 
+                         # Simpler: just log it here. The loop goes batch by batch. 
+                         # But we only want to log "Processing user..." once.
+                         pass
+                    except:
+                        pass
+                
+                # Check for nickname for logging
+                if progress_info:
+                    nickname = "Unknown"
+                    if simple_note_infos and len(simple_note_infos) > 0:
+                        nickname = simple_note_infos[0].get('user', {}).get('nickname', 'Unknown')
+                    
+                    user_id_log = user_url.split('/')[-1].split('?')[0] if user_url else 'Unknown'
+                    logger.info(f"Processing user {progress_info}: {nickname} ({user_id_log})")
+                    progress_info = '' # Clear so we don't log again for next batch
                 
                 for simple_note_info in simple_note_infos:
                     note_id = simple_note_info['note_id']
@@ -295,6 +221,7 @@ OCR识别结果:
                     note_url = f"https://www.xiaohongshu.com/explore/{note_id}?xsec_token={simple_note_info.get('xsec_token', '')}"
                     
                     success, msg, note_info = self.spider_note(note_url, cookies_str, proxies)
+                    time.sleep(10)
                     
                     if not success or not note_info:
                         continue
@@ -327,6 +254,14 @@ OCR识别结果:
                         note_info_list.append(note_info)
                         note_url_list.append(note_url)
                         old_note_count = 0 
+                        
+                        if target_date and len(note_info_list) >= 10:
+                            logger.info(f"已达到特定日期最大爬取数量限制 (10篇). Stopping.")
+                            # Break out of both loops by returning or breaking with a flag. 
+                            # Since we are inside a method that returns note_info_list, we can break the outer loop or return.
+                            # But we also need to save data. The saving happens after the loop.
+                            # So we should break both loops.
+                            break 
                     elif is_old:
                         old_note_count += 1
                         if old_note_count >= MAX_OLD_TOLERANCE:
@@ -334,6 +269,9 @@ OCR识别结果:
                             break
                             
                 if old_note_count >= MAX_OLD_TOLERANCE:
+                    break
+                
+                if target_date and len(note_info_list) >= 10:
                     break
 
             mode = 'a' if is_update else 'w'
@@ -348,7 +286,8 @@ OCR识别结果:
             msg = e
             logger.error(f'爬取用户笔记异常: {e}')
             
-        logger.info(f'爬取用户 {user_url} 结束, 共 {len(note_info_list)} 篇符合条件的笔记')
+        user_id_log = user_url.split('/')[-1].split('?')[0] if user_url else 'Unknown'
+        logger.info(f'爬取用户 {user_id_log} 结束, 共 {len(note_info_list)} 篇符合条件的笔记')
         return note_info_list, success, msg
 
 if __name__ == '__main__':
@@ -365,28 +304,91 @@ if __name__ == '__main__':
     if not user_urls:
          logger.warning("No user URLs found in user_profile.txt")
     
-    # crawling configuration
-    crawl_date = '1month' # Target date
     all_daily_notes = []
     
     for i, user_url in enumerate(user_urls):
-        logger.info(f"Processing user {i+1}/{len(user_urls)}: {user_url}")
+        progress_info = f"{i+1}/{len(user_urls)}"
         note_list, success, msg = data_spider.spider_user_all_note(
             user_url, 
             cookies_str, 
             base_path, 
             'all', 
-            crawl_interval=crawl_date, 
+            crawl_interval=datetime.now().strftime('%Y-%m-%d'), 
             is_update=True, 
-            enable_ocr=True
+            enable_ocr=True,
+            progress_info=progress_info
         )
         if success and note_list:
             all_daily_notes.extend(note_list)
             
-    # Generate summary for the day across all users
-    enable_summary = False
-    if enable_summary and all_daily_notes:
-        logger.info(f"Generating summary for {len(all_daily_notes)} notes from {len(user_urls)} users...")
-        data_spider.generate_day_summary_files(crawl_date, all_daily_notes, base_path)
-    elif not all_daily_notes:
-        logger.info("No notes found for the specified date.")
+
+    # Generate summary and push notification for updated notes
+    if all_daily_notes:
+        logger.info(f"Generating summary for {len(all_daily_notes)} new/updated notes...")
+        
+        full_content = ""
+        for note in all_daily_notes:
+            save_path = note.get('local_save_path')
+            if not save_path or not os.path.exists(save_path):
+                continue
+                
+            ocr_text = ""
+            for file in os.listdir(save_path):
+                if file.endswith('.txt') and file != 'detail.txt':
+                    with open(os.path.join(save_path, file), 'r', encoding='utf-8') as f:
+                        ocr_text += f"\n[图片文字 - {file}]:\n" + f.read()
+            
+            note_block = f"""
+==================================================
+笔记ID: {note.get('note_id')}
+类型: {note.get('note_type')}
+用户昵称: {note.get('nickname')}
+标题: {note.get('title')}
+描述: {note.get('desc')}
+标签: {', '.join(note.get('tags', []))}
+上传时间: {note.get('upload_time')}
+OCR识别结果:
+{ocr_text}
+==================================================
+"""
+            full_content += note_block
+
+        if full_content.strip():
+            summary = generate_ai_summary(full_content)
+            
+            # Send Notification
+            push_list_file = 'user_id_push_list.txt' # Relative to cwd or absolute
+            if not os.path.exists(push_list_file):
+                 push_list_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'user_id_push_list.txt')
+            
+            uids = []
+            if os.path.exists(push_list_file):
+                try:
+                    with open(push_list_file, 'r', encoding='utf-8') as f:
+                        uids = [line.strip() for line in f if line.strip()]
+                except Exception as e:
+                    logger.error(f"Failed to read user_id_push_list.txt: {e}")
+            else:
+                logger.warning("user_id_push_list.txt not found.")
+
+            if uids:
+                logger.info("Sending notification...")
+                
+                # Construct summary title based on updated users
+                unique_nicknames = list(set([note.get('nickname') for note in all_daily_notes if note.get('nickname')]))
+                if unique_nicknames:
+                    first_user = unique_nicknames[0]
+                    if len(unique_nicknames) == 1:
+                        summary_title = f"{first_user}更新总结"
+                    else:
+                        summary_title = f"{first_user}等用户更新总结"
+                else:
+                    summary_title = "" # Fallback to default in utils
+                
+                send_wxpusher_message(summary, uids, summary_prefix=summary_title)
+            else:
+                logger.info("No UIDs found, skipping notification.")
+        else:
+             logger.warning("No valid content found for summary.")
+    else:
+        logger.info("No new notes found to summarize.")
