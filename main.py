@@ -18,7 +18,8 @@ from utils import (
     splice_str, 
     norm_str, 
     generate_ai_summary, 
-    send_wxpusher_message
+    send_wxpusher_message,
+    get_spider_file
 )
 
 class XHS_Apis():
@@ -307,7 +308,7 @@ if __name__ == '__main__':
     cookies_str, base_path = init()
     data_spider = Data_Spider()
     
-    user_file = 'user_profile.txt'
+    user_file = get_spider_file('user_profile.txt', migrate_from_project=True)
     user_urls = []
     if os.path.exists(user_file):
         with open(user_file, 'r', encoding='utf-8') as f:
@@ -315,6 +316,17 @@ if __name__ == '__main__':
     
     if not user_urls:
          logger.warning("No user URLs found in user_profile.txt")
+    else:
+        logger.info(f"本次将处理 {len(user_urls)} 个用户：")
+        for idx, user_url in enumerate(user_urls, start=1):
+            user_id = "Unknown"
+            try:
+                url_parse = urllib.parse.urlparse(user_url)
+                path_parts = [p for p in url_parse.path.split("/") if p]
+                user_id = path_parts[-1] if path_parts else "Unknown"
+            except Exception:
+                user_id = "Unknown"
+            logger.info(f"[{idx}/{len(user_urls)}] user_id={user_id} url={user_url}")
     
     all_daily_notes = []
     
@@ -377,9 +389,7 @@ OCR识别结果:
         if full_content.strip():
             summary = generate_ai_summary(full_content)
             
-            push_list_file = 'user_id_push_list.txt'
-            if not os.path.exists(push_list_file):
-                 push_list_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'user_id_push_list.txt')
+            push_list_file = get_spider_file('user_id_push_list.txt', migrate_from_project=True)
             
             uids = []
             if os.path.exists(push_list_file):

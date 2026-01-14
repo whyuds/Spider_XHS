@@ -4,6 +4,7 @@ import time
 import json
 import math
 import random
+import shutil
 import requests
 import execjs
 from loguru import logger
@@ -18,26 +19,80 @@ from openai import OpenAI
 
 
 # --- Common Utils ---
+_LOG_SINK_READY = False
+
+def get_spider_home() -> str:
+    custom_home = os.getenv("SPIDER_XHS_HOME")
+    if custom_home:
+        return os.path.abspath(os.path.expanduser(custom_home))
+    return os.path.join(os.path.expanduser("~"), ".spider_xhs")
+
+def _ensure_dir(path: str) -> None:
+    if path and not os.path.exists(path):
+        os.makedirs(path, exist_ok=True)
+
+def get_spider_file(filename: str, migrate_from_project: bool = True) -> str:
+    spider_home = get_spider_home()
+    _ensure_dir(spider_home)
+    target_path = os.path.join(spider_home, filename)
+
+    if migrate_from_project and not os.path.exists(target_path):
+        project_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), filename)
+        if os.path.exists(project_path):
+            try:
+                shutil.copy2(project_path, target_path)
+            except Exception:
+                pass
+
+    return target_path
+
+def _setup_logging() -> None:
+    global _LOG_SINK_READY
+    if _LOG_SINK_READY:
+        return
+
+    logs_dir = os.path.join(get_spider_home(), "logs")
+    _ensure_dir(logs_dir)
+    logger.add(
+        os.path.join(logs_dir, "spider.log"),
+        rotation="50 MB",
+        retention="14 days",
+        encoding="utf-8",
+        enqueue=True,
+        backtrace=False,
+        diagnose=False,
+    )
+    _LOG_SINK_READY = True
+
 def load_env():
-    load_dotenv()
+    user_env = get_spider_file(".env", migrate_from_project=True)
+    if os.path.exists(user_env):
+        load_dotenv(dotenv_path=user_env, override=True)
+    else:
+        load_dotenv(override=True)
     cookies_str = os.getenv('COOKIES')
     return cookies_str
 
 def init():
-    # datas directory relative to this file (in root)
-    base = os.path.dirname(os.path.abspath(__file__))
-    media_base_path = os.path.join(base, 'datas', 'media_datas')
-    excel_base_path = os.path.join(base, 'datas', 'excel_datas')
+    _setup_logging()
+
+    spider_home = get_spider_home()
+    datas_dir = os.path.join(spider_home, "datas")
+    media_base_path = os.path.join(datas_dir, 'media_datas')
+    excel_base_path = os.path.join(datas_dir, 'excel_datas')
+    summary_base_path = os.path.join(datas_dir, "day_summary_datas")
     
-    for path in [media_base_path, excel_base_path]:
+    for path in [media_base_path, excel_base_path, summary_base_path]:
         if not os.path.exists(path):
-            os.makedirs(path)
+            os.makedirs(path, exist_ok=True)
             logger.info(f'创建目录 {path}')
             
     cookies_str = load_env()
     base_path = {
         'media': media_base_path,
         'excel': excel_base_path,
+        'summary': summary_base_path,
+        'spider_home': spider_home,
     }
     return cookies_str, base_path
 

@@ -4,7 +4,7 @@ import json
 from datetime import datetime
 import requests
 from loguru import logger
-from utils import init, norm_str, generate_ai_summary, send_wxpusher_message
+from utils import init, norm_str, generate_ai_summary, send_wxpusher_message, get_spider_file
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Generate AI Summary for Notes")
@@ -100,9 +100,9 @@ def main():
 
     logger.info(f"Found {count} notes. Generating summary...")
     
-    summary_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'datas', 'day_summary_datas')
+    summary_dir = base_path.get("summary") or os.path.join(os.path.dirname(os.path.abspath(__file__)), 'datas', 'day_summary_datas')
     if not os.path.exists(summary_dir):
-        os.makedirs(summary_dir)
+        os.makedirs(summary_dir, exist_ok=True)
     
     date_range_str = f"{args.start_time}_to_{args.end_time}"
     content_file_path = os.path.join(summary_dir, f'{date_range_str}_content.txt')
@@ -128,7 +128,7 @@ def main():
         return
 
     # Send Notification
-    push_list_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'user_id_push_list.txt')
+    push_list_file = get_spider_file('user_id_push_list.txt', migrate_from_project=True)
     uids = []
     if os.path.exists(push_list_file):
         try:

@@ -6,7 +6,7 @@ set PYTHONIOENCODING=utf-8
 set PYTHONUTF8=1
 
 :: 设置日志目录和文件
-set "LOG_DIR=%USERPROFILE%\Spider_XHS_Logs"
+set "LOG_DIR=%USERPROFILE%\.spider_xhs\logs"
 for /f %%i in ('powershell -NoProfile -Command "Get-Date -Format yyyyMMdd_HHmmss"') do set "LOG_TS=%%i"
 set "LOG_FILE=%LOG_DIR%\spider_%LOG_TS%.log"
 
