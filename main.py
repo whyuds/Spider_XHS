@@ -221,6 +221,19 @@ class Data_Spider():
                     current_user_tag = f"[{nickname}]"
                     progress_info = ''
 
+                if simple_note_infos:
+                    logger.info(f"{current_user_tag} 本页笔记列表（{len(simple_note_infos)}）：")
+                    for idx, simple_note_info in enumerate(simple_note_infos, start=1):
+                        note_id = simple_note_info.get("note_id", "Unknown")
+                        title = (
+                            simple_note_info.get("display_title")
+                            or simple_note_info.get("title")
+                            or simple_note_info.get("note_display_title")
+                            or simple_note_info.get("note_title")
+                            or ""
+                        )
+                        logger.info(f"{current_user_tag} [{idx}/{len(simple_note_infos)}] {note_id} {title}")
+
                 for simple_note_info in simple_note_infos:
                     note_id = simple_note_info['note_id']
                     
@@ -316,17 +329,6 @@ if __name__ == '__main__':
     
     if not user_urls:
          logger.warning("No user URLs found in user_profile.txt")
-    else:
-        logger.info(f"本次将处理 {len(user_urls)} 个用户：")
-        for idx, user_url in enumerate(user_urls, start=1):
-            user_id = "Unknown"
-            try:
-                url_parse = urllib.parse.urlparse(user_url)
-                path_parts = [p for p in url_parse.path.split("/") if p]
-                user_id = path_parts[-1] if path_parts else "Unknown"
-            except Exception:
-                user_id = "Unknown"
-            logger.info(f"[{idx}/{len(user_urls)}] user_id={user_id} url={user_url}")
     
     all_daily_notes = []
     
